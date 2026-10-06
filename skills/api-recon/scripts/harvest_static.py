@@ -88,19 +88,26 @@ API_HINT = re.compile(r'/(?:api|rest|service|services|gateway|graphql|v\d|web|ad
 ASSET_EXT = re.compile(r'\.(js|css|png|jpe?g|svg|gif|woff2?|ttf|ico|map|json|mp4|webp)(\?|$)', re.I)
 
 def extract_endpoints(js_text):
-    paths = set()
+    paths, qparams = set(), set()
     # quoted ('/...'), double-quoted, and backtick template paths
     for m in re.findall(r'''["'`](/[A-Za-z0-9_\-./{}$:]+)["'`]''', js_text):
         paths.add(m)
     # concatenation heads:  "/api/x/" + var
     for m in re.findall(r'''["'](/[A-Za-z0-9_\-./]+/)["']\s*\+''', js_text):
         paths.add(m)
+    # paths carrying an inline query string:  "/relay/foo?relayId=" + var
+    # the earlier patterns drop these entirely because '?' breaks the closing-quote
+    # anchor; here we keep the path (sans query) and harvest the query param names.
+    for path, qs in re.findall(r'''["'`](/[A-Za-z0-9_\-./{}$:]+)(\?[^"'`\s]*)?["'`]''', js_text):
+        paths.add(path)
+        for pn in re.findall(r'[?&]([A-Za-z0-9_]+)=', qs or ''):
+            qparams.add(f"{path}\t{pn}")
     api, other = set(), set()
     for p in paths:
         if ASSET_EXT.search(p): continue
         if p.count('/') < 2 and not API_HINT.search(p): continue
         (api if API_HINT.search(p) else other).add(p)
-    return api, other
+    return api, other, qparams
 
 def extract_routes(js_text):
     r = set()
@@ -180,11 +187,11 @@ def main():
     print(f"[+] total JS downloaded: {len(have)}")
 
     # extract from everything
-    api, other, routes = set(), set(), set()
+    api, other, routes, qparams = set(), set(), set(), set()
     for lp in have.values():
         try: txt = open(lp, encoding="utf-8", errors="ignore").read()
         except: continue
-        a, o = extract_endpoints(txt); api |= a; other |= o
+        a, o, q = extract_endpoints(txt); api |= a; other |= o; qparams |= q
         routes |= extract_routes(txt)
 
     def dump(name, items):
@@ -194,11 +201,13 @@ def main():
     dump("api_static.txt", api)
     dump("paths_other.txt", other)
     dump("routes.txt", routes)
+    dump("query_params.txt", qparams)  # "<path>\t<param>" per line
     dump("chunkmap.txt", sorted(os.path.basename(u) for u in all_manifest))
 
     print(f"[+] api endpoints: {len(api)}  (api_static.txt)")
     print(f"[+] other paths:   {len(other)} (paths_other.txt)")
     print(f"[+] route paths:   {len(routes)} (routes.txt)")
+    print(f"[+] query params:  {len(qparams)} (query_params.txt)")
     print(f"[+] outdir: {outdir}")
     print("\n[next] reverse the 3 gate facts (see reference.md), fill config.json, "
           "then: node runtime_harvest.js config.json")
